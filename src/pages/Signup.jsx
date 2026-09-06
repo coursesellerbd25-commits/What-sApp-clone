@@ -61,6 +61,8 @@ export default function Signup() {
 
         {error && <p>{error}</p>}
 
+        <h3>Already have an account?{" "} <button type="button" onClick={() => navigate("/login")}>Login here</button></h3>
+
         <button disabled={loading}>
           {loading
                       ? "Creating..."
