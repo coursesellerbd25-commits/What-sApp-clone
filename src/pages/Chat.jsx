@@ -143,10 +143,6 @@ export default function Chat() {
                   <strong>
                     {registeredUser.email}
                   </strong>
-
-                  <span>
-                    Start conversation
-                  </span>
                 </div>
               </button>
             ))
