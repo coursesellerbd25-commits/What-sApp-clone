@@ -1,105 +1,116 @@
-import { useEffect, useState } from "react";
-import socket from "../services/socket";
-import api from "../services/api";
+export const createChat = async (req, res) => {
+  const client = await pool.connect();
 
-export default function ChatWindow({
-  chatId,
-  currentUser
-}) {
-  const [messages, setMessages] = useState([]);
-  const [text, setText] = useState("");
+  try {
+    const { userId } = req.body;
 
-  useEffect(() => {
-    if (!chatId) return;
+    if (!userId) {
+      return res.status(400).json({
+        message: "userId is required"
+      });
+    }
 
-    socket.connect();
+    if (userId === req.user.id) {
+      return res.status(400).json({
+        message: "You cannot chat with yourself"
+      });
+    }
 
-    socket.emit("join_chat", chatId);
-
-    const handleNewMessage = (message) => {
-      setMessages((previous) => [
-        ...previous,
-        message
-      ]);
-    };
-
-    socket.on(
-      "new_message",
-      handleNewMessage
+    // Check that the other user exists
+    const userResult = await client.query(
+      `
+      SELECT id, email
+      FROM users
+      WHERE id = $1
+      `,
+      [userId]
     );
 
-    return () => {
-      socket.off(
-        "new_message",
-        handleNewMessage
-      );
+    if (userResult.rows.length === 0) {
+      return res.status(404).json({
+        message: "User not found"
+      });
+    }
 
-      socket.disconnect();
-    };
-  }, [chatId]);
+    /*
+      Find an existing 1-to-1 chat
+      containing BOTH users.
+    */
+    const existingChat = await client.query(
+      `
+      SELECT cp1.chat_id
+      FROM chat_participants cp1
+      INNER JOIN chat_participants cp2
+        ON cp1.chat_id = cp2.chat_id
+      INNER JOIN chats c
+        ON c.id = cp1.chat_id
+      WHERE cp1.user_id = $1
+        AND cp2.user_id = $2
+      GROUP BY cp1.chat_id
+      HAVING COUNT(DISTINCT cp1.user_id) = 1
+         AND COUNT(DISTINCT cp2.user_id) = 1
+      LIMIT 1
+      `,
+      [req.user.id, userId]
+    );
 
-  useEffect(() => {
-    const loadMessages = async () => {
-      if (!chatId) return;
+    if (existingChat.rows.length > 0) {
+      return res.json({
+        chat: {
+          id: existingChat.rows[0].chat_id
+        },
+        existing: true
+      });
+    }
 
-      try {
-        const response = await api.get(
-          `/api/chats/${chatId}/messages`
-        );
+    // Create a new chat
+    await client.query("BEGIN");
 
-        setMessages(response.data.messages);
-      } catch (error) {
-        console.error(error);
-      }
-    };
+    const chatId = uuidv4();
 
-    loadMessages();
-  }, [chatId]);
+    await client.query(
+      `
+      INSERT INTO chats (id)
+      VALUES ($1)
+      `,
+      [chatId]
+    );
 
-  const sendMessage = (e) => {
-    e.preventDefault();
+    await client.query(
+      `
+      INSERT INTO chat_participants
+      (id, chat_id, user_id)
+      VALUES ($1, $2, $3)
+      `,
+      [uuidv4(), chatId, req.user.id]
+    );
 
-    if (!text.trim()) return;
+    await client.query(
+      `
+      INSERT INTO chat_participants
+      (id, chat_id, user_id)
+      VALUES ($1, $2, $3)
+      `,
+      [uuidv4(), chatId, userId]
+    );
 
-    socket.emit("send_message", {
-      chatId,
-      text
+    await client.query("COMMIT");
+
+    res.status(201).json({
+      chat: {
+        id: chatId
+      },
+      existing: false
     });
+  } catch (error) {
+    await client.query("ROLLBACK");
 
-    setText("");
-  };
+    console.error("Create chat error:", error);
 
-  return (
-    <div className="chat-window">
-      <div className="messages">
-        {messages.map((message) => (
-          <div
-            key={message.id}
-            className={
-              message.sender_id ===
-              currentUser.id
-                ? "message mine"
-                : "message"
-            }
-          >
-            {message.text_content}
-          </div>
-        ))}
-      </div>
-
-      <form onSubmit={sendMessage}>
-        <input
-          value={text}
-          onChange={(e) =>
-            setText(e.target.value)
-          }
-          placeholder="Type a message..."
-        />
-
-        <button type="submit">
-          Send
-        </button>
-      </form>
-    </div>
-  );
-}
+    res.status(500).json({
+      message: "Could not create chat"
+    });
+  } finally {
+    client.release();
+  }
+};
